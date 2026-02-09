@@ -420,9 +420,8 @@ Private Function GetCustomProp(ByVal doc As SldWorks.ModelDoc2, ByVal cfgName As
     Set cpm = ext.CustomPropertyManager(cfgName)
 
     Dim valOut As String, resolvedVal As String
-    Dim wasResolved As Boolean
 
-    cpm.Get4 propName, False, valOut, resolvedVal, wasResolved
+    cpm.Get4 propName, False, valOut, resolvedVal
 
     If Len(Trim$(resolvedVal)) > 0 Then
         GetCustomProp = resolvedVal
