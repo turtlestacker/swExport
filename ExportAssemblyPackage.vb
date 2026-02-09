@@ -699,7 +699,24 @@ Private Function GetRootComponentSafe(ByVal swAssy As SldWorks.AssemblyDoc) As S
     Dim rootComp As SldWorks.Component2
     Set rootComp = swAssy.GetRootComponent3(True)
     If rootComp Is Nothing Then
+        Set rootComp = swAssy.GetRootComponent3(False)
+    End If
+    If rootComp Is Nothing Then
         Set rootComp = swAssy.GetRootComponent
+    End If
+    If rootComp Is Nothing Then
+        Dim swModel As SldWorks.ModelDoc2
+        Dim cfg As SldWorks.Configuration
+        Set swModel = swAssy
+        If Not swModel Is Nothing Then
+            Set cfg = swModel.ConfigurationManager.ActiveConfiguration
+            If Not cfg Is Nothing Then
+                Set rootComp = cfg.GetRootComponent3(True)
+                If rootComp Is Nothing Then
+                    Set rootComp = cfg.GetRootComponent3(False)
+                End If
+            End If
+        End If
     End If
 
     Set GetRootComponentSafe = rootComp
