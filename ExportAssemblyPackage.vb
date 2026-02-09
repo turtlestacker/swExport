@@ -51,14 +51,22 @@ Sub Main()
 
     ' Initialise HTML
     Dim assyName As String
-    assyName = GetBaseNameNoExt(swDoc.GetPathName)
+    If Len(swDoc.GetPathName) > 0 Then
+        assyName = GetBaseNameNoExt(swDoc.GetPathName)
+    Else
+        assyName = swDoc.GetTitle
+    End If
     Call InitHtml(assyName)
 
     ' Get root component and traverse
     Dim swAssy As SldWorks.AssemblyDoc
     Set swAssy = swDoc
     Dim swRootComp As SldWorks.Component2
-    Set swRootComp = swAssy.GetRootComponent3(True)
+    Set swRootComp = GetRootComponentSafe(swAssy)
+    If swRootComp Is Nothing Then
+        MsgBox "Could not get the assembly root component.", vbCritical, "Export Assembly Package"
+        Exit Sub
+    End If
 
     LogMessage "Starting export of assembly: " & assyName
 
@@ -683,6 +691,18 @@ Private Function BrowseForFolder() As String
 
 EH:
     BrowseForFolder = ""
+End Function
+
+Private Function GetRootComponentSafe(ByVal swAssy As SldWorks.AssemblyDoc) As SldWorks.Component2
+    On Error Resume Next
+
+    Dim rootComp As SldWorks.Component2
+    Set rootComp = swAssy.GetRootComponent3(True)
+    If rootComp Is Nothing Then
+        Set rootComp = swAssy.GetRootComponent
+    End If
+
+    Set GetRootComponentSafe = rootComp
 End Function
 
 Private Sub LogMessage(ByVal msg As String)
