@@ -100,9 +100,15 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
         If SKIP_SUPPRESSED Then
             Dim suppState As Long
             suppState = swChild.GetSuppression2
-            If suppState = swComponentSuppressed Or suppState = swComponentLightweight Then
-                If suppState = swComponentSuppressed Then
-                    LogMessage "Skipping suppressed: " & swChild.Name2
+            If suppState = swComponentSuppressed Then
+                LogMessage "Skipping suppressed: " & swChild.Name2
+                GoTo NextChild
+            ElseIf suppState = swComponentLightweight Then
+                ' SolidWorks 2025 often loads components lightweight; resolve before access.
+                Dim resolvedOk As Boolean
+                resolvedOk = swChild.SetSuppression2(swComponentResolved)
+                If Not resolvedOk Then
+                    LogMessage "Could not resolve lightweight component: " & swChild.Name2
                     GoTo NextChild
                 End If
             End If
@@ -174,7 +180,7 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
                 End If
 
                 ' Capture screenshot
-                pngFile = CapturePartScreenshot(modelPath, gOutFolder, baseName, desc)
+                pngFile = CapturePartScreenshot(swChildModel, gOutFolder, baseName, desc)
             End If
 
             Call AppendPartNode(displayName, pngFile, pdfFile)
@@ -287,29 +293,29 @@ End Function
 '===============================================================================
 ' Screenshot Capture
 '===============================================================================
-Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolder As String, _
+Private Function CapturePartScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, ByVal outFolder As String, _
                                         ByVal baseName As String, ByVal desc As String) As String
     On Error GoTo EH
 
-    ' Activate the part (it should already be loaded as part of the assembly)
-    Dim swPartDoc As SldWorks.ModelDoc2
-    Dim errs As Long, warns As Long
-    Set swPartDoc = swApp.ActivateDoc3(modelPath, False, swActivateDocError_e.swGenericActivateError, errs)
+    ' Activate the part (use document title, not full path, for SolidWorks 2025)
+    Dim errs As Long
+    Dim warns As Long
+    Dim activeDoc As SldWorks.ModelDoc2
+    Dim partTitle As String
+    Dim previousDoc As SldWorks.ModelDoc2
+    Set previousDoc = swApp.ActiveDoc
+    partTitle = swPartDoc.GetTitle
+    Set activeDoc = swApp.ActivateDoc3(partTitle, False, swActivateDocError_e.swGenericActivateError, errs)
 
-    If swPartDoc Is Nothing Then
-        ' Try opening it
-        Set swPartDoc = swApp.OpenDoc6(modelPath, swDocPART, swOpenDocOptions_Silent, "", errs, warns)
-        If swPartDoc Is Nothing Then
-            LogMessage "Could not activate/open part for screenshot: " & baseName
-            CapturePartScreenshot = ""
-            Exit Function
-        End If
-        Set swPartDoc = swApp.ActivateDoc3(modelPath, False, swActivateDocError_e.swGenericActivateError, errs)
+    If activeDoc Is Nothing Then
+        LogMessage "Could not activate part for screenshot: " & baseName
+        CapturePartScreenshot = ""
+        Exit Function
     End If
 
     ' Set isometric view
-    swPartDoc.ShowNamedView2 "*Isometric", -1
-    swPartDoc.ViewZoomtofit2
+    activeDoc.ShowNamedView2 "*Isometric", -1
+    activeDoc.ViewZoomtofit2
 
     ' Build filename
     Dim pngName As String
@@ -320,7 +326,7 @@ Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolde
 
     ' Try SaveAs PNG via Extension
     Dim swExt As SldWorks.ModelDocExtension
-    Set swExt = swPartDoc.Extension
+    Set swExt = activeDoc.Extension
 
     Dim ok As Boolean
     ok = swExt.SaveAs(pngPath, swSaveAsCurrentVersion, swSaveAsOptions_Silent, Nothing, errs, warns)
@@ -328,13 +334,13 @@ Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolde
     If Not ok Then
         ' Fallback: use SaveBMP
         LogMessage "PNG SaveAs failed, trying SaveBMP fallback for: " & baseName
-        ok = swPartDoc.SaveBMP(pngPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT)
+        ok = activeDoc.SaveBMP(pngPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT)
     End If
 
     ' Re-activate the assembly
-    Dim swAssyDoc As SldWorks.ModelDoc2
-    Set swAssyDoc = swApp.ActiveDoc
-    ' If we navigated away, go back — the assembly should still be open
+    If Not previousDoc Is Nothing Then
+        swApp.ActivateDoc3 previousDoc.GetTitle, False, swActivateDocError_e.swGenericActivateError, errs
+    End If
 
     If ok Then
         LogMessage "Captured screenshot: " & pngName
