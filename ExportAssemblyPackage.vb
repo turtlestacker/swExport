@@ -17,6 +17,7 @@ Const SCREENSHOT_HEIGHT As Long = 600
 Dim swApp As SldWorks.SldWorks
 Dim gOutFolder As String
 Dim gExported As Collection          ' dedup: keyed by UCase(modelPath)
+Dim gExportedAssemblies As Collection ' dedup: keyed by UCase(modelPath)
 Dim gHtml As String                  ' accumulates the HTML output
 Dim gLogMessages As String           ' accumulated log
 
@@ -48,6 +49,7 @@ Sub Main()
 
     ' Initialise dedup collection
     Set gExported = New Collection
+    Set gExportedAssemblies = New Collection
 
     ' Initialise HTML
     Dim assyName As String
@@ -151,6 +153,33 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
         displayName = swChild.Name2
 
         If modelType = swDocASSEMBLY Then
+            Dim assyKey As String
+            If Len(modelPath) > 0 Then
+                assyKey = UCase(modelPath)
+            ElseIf Len(swChild.GetPathName) > 0 Then
+                assyKey = UCase(swChild.GetPathName)
+            Else
+                assyKey = UCase(swChild.Name2)
+            End If
+
+            Dim assyAlreadyExported As Boolean
+            assyAlreadyExported = False
+            On Error Resume Next
+            Dim dummyAssy As String
+            dummyAssy = gExportedAssemblies(assyKey)
+            If Err.Number = 0 Then
+                assyAlreadyExported = True
+            End If
+            Err.Clear
+            On Error GoTo EH
+
+            If assyAlreadyExported Then
+                LogMessage "Skipping duplicate sub-assembly: " & swChild.Name2
+                GoTo NextChild
+            End If
+
+            gExportedAssemblies.Add assyKey, assyKey
+
             ' Sub-assembly: add collapsible node, recurse, close
             Dim assyDesc As String
             assyDesc = GetDescription(swChildModel)
