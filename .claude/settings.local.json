@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:help.solidworks.com)",
+      "WebFetch(domain:cadbooster.com)",
+      "WebSearch"
+    ]
+  }
+}
