@@ -77,9 +77,13 @@ Sub Main()
     Dim rootPng As String
     rootPng = CaptureModelScreenshot(swDoc, gOutFolder, assyName, rootDesc)
 
-    Call AppendAssemblyNode(assyName, rootPng, 0)
-    Call TraverseComponent(swRootComp, 1)
-    Call CloseAssemblyNode
+    If Len(rootPng) > 0 Then
+        Call AppendAssemblyNode(assyName, rootPng, 0)
+        Call TraverseComponent(swRootComp, 1)
+        Call CloseAssemblyNode
+    Else
+        Call TraverseComponent(swRootComp, 0)
+    End If
 
     ' Finalise and write HTML
     Dim htmlContent As String
@@ -188,9 +192,13 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
             Dim assyPng As String
             assyPng = CaptureModelScreenshot(swChildModel, gOutFolder, assyBaseName, assyDesc)
 
-            Call AppendAssemblyNode(displayName, assyPng, depth)
-            Call TraverseComponent(swChild, depth + 1)
-            Call CloseAssemblyNode
+            If Len(assyPng) > 0 Then
+                Call AppendAssemblyNode(displayName, assyPng, depth)
+                Call TraverseComponent(swChild, depth + 1)
+                Call CloseAssemblyNode
+            Else
+                Call TraverseComponent(swChild, depth)
+            End If
         Else
             ' Part: export if not already done, add leaf node
             Dim pdfFile As String
@@ -234,7 +242,9 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
                 pngFile = CaptureModelScreenshot(swChildModel, gOutFolder, baseName, desc)
             End If
 
-            Call AppendPartNode(displayName, pngFile, pdfFile, depth)
+            If Len(pngFile) > 0 Then
+                Call AppendPartNode(displayName, pngFile, pdfFile, depth)
+            End If
         End If
 
 NextChild:
