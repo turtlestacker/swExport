@@ -70,7 +70,14 @@ Sub Main()
 
     LogMessage "Starting export of assembly: " & assyName
 
-    Call TraverseComponent(swRootComp, 0)
+    Dim rootDesc As String
+    rootDesc = GetDescription(swDoc)
+    Dim rootPng As String
+    rootPng = CaptureModelScreenshot(swDoc, gOutFolder, assyName, rootDesc)
+
+    Call AppendAssemblyNode(assyName, rootPng, 0)
+    Call TraverseComponent(swRootComp, 1)
+    Call CloseAssemblyNode
 
     ' Finalise and write HTML
     Dim htmlContent As String
@@ -145,7 +152,14 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
 
         If modelType = swDocASSEMBLY Then
             ' Sub-assembly: add collapsible node, recurse, close
-            Call AppendAssemblyNode(displayName, depth)
+            Dim assyDesc As String
+            assyDesc = GetDescription(swChildModel)
+            Dim assyBaseName As String
+            assyBaseName = GetBaseNameNoExt(modelPath)
+            Dim assyPng As String
+            assyPng = CaptureModelScreenshot(swChildModel, gOutFolder, assyBaseName, assyDesc)
+
+            Call AppendAssemblyNode(displayName, assyPng, depth)
             Call TraverseComponent(swChild, depth + 1)
             Call CloseAssemblyNode
         Else
@@ -188,10 +202,10 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
                 End If
 
                 ' Capture screenshot
-                pngFile = CapturePartScreenshot(swChildModel, gOutFolder, baseName, desc)
+                pngFile = CaptureModelScreenshot(swChildModel, gOutFolder, baseName, desc)
             End If
 
-            Call AppendPartNode(displayName, pngFile, pdfFile)
+            Call AppendPartNode(displayName, pngFile, pdfFile, depth)
         End If
 
 NextChild:
@@ -301,11 +315,11 @@ End Function
 '===============================================================================
 ' Screenshot Capture
 '===============================================================================
-Private Function CapturePartScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, ByVal outFolder As String, _
+Private Function CaptureModelScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, ByVal outFolder As String, _
                                         ByVal baseName As String, ByVal desc As String) As String
     On Error GoTo EH
 
-    ' Activate the part (use document title, not full path, for SolidWorks 2025)
+    ' Activate the document (use document title, not full path, for SolidWorks 2025)
     Dim errs As Long
     Dim warns As Long
     Dim activeDoc As SldWorks.ModelDoc2
@@ -316,8 +330,8 @@ Private Function CapturePartScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, By
     Set activeDoc = swApp.ActivateDoc3(partTitle, False, swActivateDocError_e.swGenericActivateError, errs)
 
     If activeDoc Is Nothing Then
-        LogMessage "Could not activate part for screenshot: " & baseName
-        CapturePartScreenshot = ""
+        LogMessage "Could not activate document for screenshot: " & baseName
+        CaptureModelScreenshot = ""
         Exit Function
     End If
 
@@ -359,16 +373,16 @@ Private Function CapturePartScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, By
 
     If ok Then
         LogMessage "Captured screenshot: " & pngName
-        CapturePartScreenshot = pngName
+        CaptureModelScreenshot = pngName
     Else
         LogMessage "Screenshot failed for: " & baseName
-        CapturePartScreenshot = ""
+        CaptureModelScreenshot = ""
     End If
     Exit Function
 
 EH:
     LogMessage "Error capturing screenshot: " & Err.Description
-    CapturePartScreenshot = ""
+    CaptureModelScreenshot = ""
 End Function
 
 '===============================================================================
@@ -559,7 +573,7 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;" & vbCrLf
     gHtml = gHtml & "         background: #f5f5f5; color: #333; padding: 20px; }" & vbCrLf
     gHtml = gHtml & "  h1 { margin-bottom: 16px; font-size: 1.4em; color: #1a1a1a; }" & vbCrLf
-    gHtml = gHtml & "  ul { list-style: none; padding-left: 24px; }" & vbCrLf
+    gHtml = gHtml & "  ul { list-style: none; padding-left: 0; }" & vbCrLf
     gHtml = gHtml & "  ul.root { padding-left: 0; }" & vbCrLf
     gHtml = gHtml & "  li { margin: 4px 0; }" & vbCrLf
     gHtml = gHtml & "  li.assy { cursor: pointer; }" & vbCrLf
@@ -577,6 +591,7 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "  .part-name a { color: #0066cc; text-decoration: none; }" & vbCrLf
     gHtml = gHtml & "  .part-name a:hover { text-decoration: underline; }" & vbCrLf
     gHtml = gHtml & "  .children { margin-top: 4px; }" & vbCrLf
+    gHtml = gHtml & "  .assy-thumb { margin: 6px 0 0 24px; }" & vbCrLf
     gHtml = gHtml & "</style>" & vbCrLf
     gHtml = gHtml & "</head>" & vbCrLf
     gHtml = gHtml & "<body>" & vbCrLf
@@ -584,16 +599,25 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "<ul class=""root"">" & vbCrLf
 End Sub
 
-Private Sub AppendAssemblyNode(ByVal Name As String, ByVal depth As Long)
-    gHtml = gHtml & "<li class=""assy collapsed"">" & vbCrLf
+Private Sub AppendAssemblyNode(ByVal Name As String, ByVal pngFile As String, ByVal depth As Long)
+    Dim indentPx As Long
+    indentPx = depth * 16
+    gHtml = gHtml & "<li class=""assy collapsed"" style=""padding-left:" & indentPx & "px;"">" & vbCrLf
     gHtml = gHtml & "  <span class=""node-label"" onclick=""toggle(this.parentElement)"">" & vbCrLf
     gHtml = gHtml & "    <span class=""toggle-arrow"">&#9654;</span> &#128193; " & HtmlEncode(Name) & vbCrLf
     gHtml = gHtml & "  </span>" & vbCrLf
+    If Len(pngFile) > 0 Then
+        gHtml = gHtml & "  <div class=""assy-thumb"">" & vbCrLf
+        gHtml = gHtml & "    <img src=""" & HtmlEncode(pngFile) & """ class=""thumb"" alt=""" & HtmlEncode(Name) & """>" & vbCrLf
+        gHtml = gHtml & "  </div>" & vbCrLf
+    End If
     gHtml = gHtml & "  <ul class=""children"" style=""display:none"">" & vbCrLf
 End Sub
 
-Private Sub AppendPartNode(ByVal Name As String, ByVal pngFile As String, ByVal pdfFile As String)
-    gHtml = gHtml & "<li class=""part"">" & vbCrLf
+Private Sub AppendPartNode(ByVal Name As String, ByVal pngFile As String, ByVal pdfFile As String, ByVal depth As Long)
+    Dim indentPx As Long
+    indentPx = depth * 16
+    gHtml = gHtml & "<li class=""part"" style=""padding-left:" & indentPx & "px;"">" & vbCrLf
 
     ' Thumbnail
     If Len(pngFile) > 0 Then
@@ -625,7 +649,7 @@ Private Function FinaliseHtml() As String
     html = html & "</ul>" & vbCrLf
     html = html & "<script>" & vbCrLf
     html = html & "function toggle(li) {" & vbCrLf
-    html = html & "  var ul = li.querySelector('.children');" & vbCrLf
+    html = html & "  var ul = li.querySelector('ul.children');" & vbCrLf
     html = html & "  if (!ul) return;" & vbCrLf
     html = html & "  if (ul.style.display === 'none') {" & vbCrLf
     html = html & "    ul.style.display = 'block';" & vbCrLf
