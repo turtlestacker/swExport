@@ -600,9 +600,7 @@ Private Sub InitHtml(ByVal assemblyName As String)
 End Sub
 
 Private Sub AppendAssemblyNode(ByVal Name As String, ByVal pngFile As String, ByVal depth As Long)
-    Dim indentPx As Long
-    indentPx = depth * 16
-    gHtml = gHtml & "<li class=""assy collapsed"" style=""padding-left:" & indentPx & "px;"">" & vbCrLf
+    gHtml = gHtml & "<li class=""assy collapsed""" & BuildIndentStyle(depth) & ">" & vbCrLf
     gHtml = gHtml & "  <span class=""node-label"" onclick=""toggle(this.parentElement)"">" & vbCrLf
     gHtml = gHtml & "    <span class=""toggle-arrow"">&#9654;</span> &#128193; " & HtmlEncode(Name) & vbCrLf
     gHtml = gHtml & "  </span>" & vbCrLf
@@ -615,9 +613,7 @@ Private Sub AppendAssemblyNode(ByVal Name As String, ByVal pngFile As String, By
 End Sub
 
 Private Sub AppendPartNode(ByVal Name As String, ByVal pngFile As String, ByVal pdfFile As String, ByVal depth As Long)
-    Dim indentPx As Long
-    indentPx = depth * 16
-    gHtml = gHtml & "<li class=""part"" style=""padding-left:" & indentPx & "px;"">" & vbCrLf
+    gHtml = gHtml & "<li class=""part""" & BuildIndentStyle(depth) & ">" & vbCrLf
 
     ' Thumbnail
     If Len(pngFile) > 0 Then
@@ -698,6 +694,17 @@ Private Function HtmlEncode(ByVal s As String) As String
     t = Replace(t, ">", "&gt;")
     t = Replace(t, """", "&quot;")
     HtmlEncode = t
+End Function
+
+Private Function BuildIndentStyle(ByVal depth As Long) As String
+    If depth <= 0 Then
+        BuildIndentStyle = ""
+        Exit Function
+    End If
+
+    Dim indentPx As Long
+    indentPx = depth * 24
+    BuildIndentStyle = " style=""margin-left:" & indentPx & "px; border-left:2px solid #ddd; padding-left:10px;"""
 End Function
 
 '===============================================================================
