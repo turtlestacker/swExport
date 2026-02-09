@@ -345,10 +345,17 @@ Private Function CapturePartScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, By
         ok = activeDoc.SaveBMP(pngPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT)
     End If
 
-    ' Re-activate the assembly
-    If Not previousDoc Is Nothing Then
+    ' Close the part after export, then re-activate the previous document
+    On Error Resume Next
+    If previousDoc Is Nothing Then
+        swApp.CloseDoc activeDoc.GetTitle
+    ElseIf activeDoc.GetTitle <> previousDoc.GetTitle Then
+        swApp.CloseDoc activeDoc.GetTitle
+        swApp.ActivateDoc3 previousDoc.GetTitle, False, swActivateDocError_e.swGenericActivateError, errs
+    Else
         swApp.ActivateDoc3 previousDoc.GetTitle, False, swActivateDocError_e.swGenericActivateError, errs
     End If
+    On Error GoTo EH
 
     If ok Then
         LogMessage "Captured screenshot: " & pngName
