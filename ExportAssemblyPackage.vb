@@ -17,6 +17,7 @@ Const SCREENSHOT_HEIGHT As Long = 600
 Dim swApp As SldWorks.SldWorks
 Dim gOutFolder As String
 Dim gExported As Collection          ' dedup: keyed by UCase(modelPath)
+Dim gExportedAssemblies As Collection ' dedup: keyed by UCase(modelPath)
 Dim gHtml As String                  ' accumulates the HTML output
 Dim gLogMessages As String           ' accumulated log
 
@@ -48,21 +49,41 @@ Sub Main()
 
     ' Initialise dedup collection
     Set gExported = New Collection
+    Set gExportedAssemblies = New Collection
 
     ' Initialise HTML
     Dim assyName As String
-    assyName = GetBaseNameNoExt(swDoc.GetPathName)
+    If Len(swDoc.GetPathName) > 0 Then
+        assyName = GetBaseNameNoExt(swDoc.GetPathName)
+    Else
+        assyName = swDoc.GetTitle
+    End If
     Call InitHtml(assyName)
 
     ' Get root component and traverse
     Dim swAssy As SldWorks.AssemblyDoc
     Set swAssy = swDoc
     Dim swRootComp As SldWorks.Component2
-    Set swRootComp = swAssy.GetRootComponent3(True)
+    Set swRootComp = GetRootComponentSafe(swAssy)
+    If swRootComp Is Nothing Then
+        MsgBox "Could not get the assembly root component.", vbCritical, "Export Assembly Package"
+        Exit Sub
+    End If
 
     LogMessage "Starting export of assembly: " & assyName
 
-    Call TraverseComponent(swRootComp, 0)
+    Dim rootDesc As String
+    rootDesc = GetDescription(swDoc)
+    Dim rootPng As String
+    rootPng = CaptureModelScreenshot(swDoc, gOutFolder, assyName, rootDesc)
+
+    If Len(rootPng) > 0 Then
+        Call AppendAssemblyNode(assyName, rootPng, 0)
+        Call TraverseComponent(swRootComp, 1)
+        Call CloseAssemblyNode
+    Else
+        Call TraverseComponent(swRootComp, 0)
+    End If
 
     ' Finalise and write HTML
     Dim htmlContent As String
@@ -100,9 +121,15 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
         If SKIP_SUPPRESSED Then
             Dim suppState As Long
             suppState = swChild.GetSuppression2
-            If suppState = swComponentSuppressed Or suppState = swComponentLightweight Then
-                If suppState = swComponentSuppressed Then
-                    LogMessage "Skipping suppressed: " & swChild.Name2
+            If suppState = swComponentSuppressed Then
+                LogMessage "Skipping suppressed: " & swChild.Name2
+                GoTo NextChild
+            ElseIf suppState = swComponentLightweight Then
+                ' SolidWorks 2025 often loads components lightweight; resolve before access.
+                Dim resolvedOk As Boolean
+                resolvedOk = swChild.SetSuppression2(swComponentResolved)
+                If Not resolvedOk Then
+                    LogMessage "Could not resolve lightweight component: " & swChild.Name2
                     GoTo NextChild
                 End If
             End If
@@ -130,10 +157,48 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
         displayName = swChild.Name2
 
         If modelType = swDocASSEMBLY Then
+            Dim assyKey As String
+            If Len(modelPath) > 0 Then
+                assyKey = UCase(modelPath)
+            ElseIf Len(swChild.GetPathName) > 0 Then
+                assyKey = UCase(swChild.GetPathName)
+            Else
+                assyKey = UCase(swChild.Name2)
+            End If
+
+            Dim assyAlreadyExported As Boolean
+            assyAlreadyExported = False
+            On Error Resume Next
+            Dim dummyAssy As String
+            dummyAssy = gExportedAssemblies(assyKey)
+            If Err.Number = 0 Then
+                assyAlreadyExported = True
+            End If
+            Err.Clear
+            On Error GoTo EH
+
+            If assyAlreadyExported Then
+                LogMessage "Skipping duplicate sub-assembly: " & swChild.Name2
+                GoTo NextChild
+            End If
+
+            gExportedAssemblies.Add assyKey, assyKey
+
             ' Sub-assembly: add collapsible node, recurse, close
-            Call AppendAssemblyNode(displayName, depth)
-            Call TraverseComponent(swChild, depth + 1)
-            Call CloseAssemblyNode
+            Dim assyDesc As String
+            assyDesc = GetDescription(swChildModel)
+            Dim assyBaseName As String
+            assyBaseName = GetBaseNameNoExt(modelPath)
+            Dim assyPng As String
+            assyPng = CaptureModelScreenshot(swChildModel, gOutFolder, assyBaseName, assyDesc)
+
+            If Len(assyPng) > 0 Then
+                Call AppendAssemblyNode(displayName, assyPng, depth)
+                Call TraverseComponent(swChild, depth + 1)
+                Call CloseAssemblyNode
+            Else
+                Call TraverseComponent(swChild, depth)
+            End If
         Else
             ' Part: export if not already done, add leaf node
             Dim pdfFile As String
@@ -174,10 +239,12 @@ Private Sub TraverseComponent(ByVal swComp As SldWorks.Component2, ByVal depth A
                 End If
 
                 ' Capture screenshot
-                pngFile = CapturePartScreenshot(modelPath, gOutFolder, baseName, desc)
+                pngFile = CaptureModelScreenshot(swChildModel, gOutFolder, baseName, desc)
             End If
 
-            Call AppendPartNode(displayName, pngFile, pdfFile)
+            If Len(pngFile) > 0 Then
+                Call AppendPartNode(displayName, pngFile, pdfFile, depth)
+            End If
         End If
 
 NextChild:
@@ -287,29 +354,29 @@ End Function
 '===============================================================================
 ' Screenshot Capture
 '===============================================================================
-Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolder As String, _
+Private Function CaptureModelScreenshot(ByVal swPartDoc As SldWorks.ModelDoc2, ByVal outFolder As String, _
                                         ByVal baseName As String, ByVal desc As String) As String
     On Error GoTo EH
 
-    ' Activate the part (it should already be loaded as part of the assembly)
-    Dim swPartDoc As SldWorks.ModelDoc2
-    Dim errs As Long, warns As Long
-    Set swPartDoc = swApp.ActivateDoc3(modelPath, False, swActivateDocError_e.swGenericActivateError, errs)
+    ' Activate the document (use document title, not full path, for SolidWorks 2025)
+    Dim errs As Long
+    Dim warns As Long
+    Dim activeDoc As SldWorks.ModelDoc2
+    Dim partTitle As String
+    Dim previousDoc As SldWorks.ModelDoc2
+    Set previousDoc = swApp.ActiveDoc
+    partTitle = swPartDoc.GetTitle
+    Set activeDoc = swApp.ActivateDoc3(partTitle, False, swActivateDocError_e.swGenericActivateError, errs)
 
-    If swPartDoc Is Nothing Then
-        ' Try opening it
-        Set swPartDoc = swApp.OpenDoc6(modelPath, swDocPART, swOpenDocOptions_Silent, "", errs, warns)
-        If swPartDoc Is Nothing Then
-            LogMessage "Could not activate/open part for screenshot: " & baseName
-            CapturePartScreenshot = ""
-            Exit Function
-        End If
-        Set swPartDoc = swApp.ActivateDoc3(modelPath, False, swActivateDocError_e.swGenericActivateError, errs)
+    If activeDoc Is Nothing Then
+        LogMessage "Could not activate document for screenshot: " & baseName
+        CaptureModelScreenshot = ""
+        Exit Function
     End If
 
     ' Set isometric view
-    swPartDoc.ShowNamedView2 "*Isometric", -1
-    swPartDoc.ViewZoomtofit2
+    activeDoc.ShowNamedView2 "*Isometric", -1
+    activeDoc.ViewZoomtofit2
 
     ' Build filename
     Dim pngName As String
@@ -320,7 +387,7 @@ Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolde
 
     ' Try SaveAs PNG via Extension
     Dim swExt As SldWorks.ModelDocExtension
-    Set swExt = swPartDoc.Extension
+    Set swExt = activeDoc.Extension
 
     Dim ok As Boolean
     ok = swExt.SaveAs(pngPath, swSaveAsCurrentVersion, swSaveAsOptions_Silent, Nothing, errs, warns)
@@ -328,26 +395,33 @@ Private Function CapturePartScreenshot(ByVal modelPath As String, ByVal outFolde
     If Not ok Then
         ' Fallback: use SaveBMP
         LogMessage "PNG SaveAs failed, trying SaveBMP fallback for: " & baseName
-        ok = swPartDoc.SaveBMP(pngPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT)
+        ok = activeDoc.SaveBMP(pngPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT)
     End If
 
-    ' Re-activate the assembly
-    Dim swAssyDoc As SldWorks.ModelDoc2
-    Set swAssyDoc = swApp.ActiveDoc
-    ' If we navigated away, go back — the assembly should still be open
+    ' Close the part after export, then re-activate the previous document
+    On Error Resume Next
+    If previousDoc Is Nothing Then
+        swApp.CloseDoc activeDoc.GetTitle
+    ElseIf activeDoc.GetTitle <> previousDoc.GetTitle Then
+        swApp.CloseDoc activeDoc.GetTitle
+        swApp.ActivateDoc3 previousDoc.GetTitle, False, swActivateDocError_e.swGenericActivateError, errs
+    Else
+        swApp.ActivateDoc3 previousDoc.GetTitle, False, swActivateDocError_e.swGenericActivateError, errs
+    End If
+    On Error GoTo EH
 
     If ok Then
         LogMessage "Captured screenshot: " & pngName
-        CapturePartScreenshot = pngName
+        CaptureModelScreenshot = pngName
     Else
         LogMessage "Screenshot failed for: " & baseName
-        CapturePartScreenshot = ""
+        CaptureModelScreenshot = ""
     End If
     Exit Function
 
 EH:
     LogMessage "Error capturing screenshot: " & Err.Description
-    CapturePartScreenshot = ""
+    CaptureModelScreenshot = ""
 End Function
 
 '===============================================================================
@@ -406,9 +480,8 @@ Private Function GetCustomProp(ByVal doc As SldWorks.ModelDoc2, ByVal cfgName As
     Set cpm = ext.CustomPropertyManager(cfgName)
 
     Dim valOut As String, resolvedVal As String
-    Dim wasResolved As Boolean
 
-    cpm.Get4 propName, False, valOut, resolvedVal, wasResolved
+    cpm.Get4 propName, False, valOut, resolvedVal
 
     If Len(Trim$(resolvedVal)) > 0 Then
         GetCustomProp = resolvedVal
@@ -539,7 +612,7 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;" & vbCrLf
     gHtml = gHtml & "         background: #f5f5f5; color: #333; padding: 20px; }" & vbCrLf
     gHtml = gHtml & "  h1 { margin-bottom: 16px; font-size: 1.4em; color: #1a1a1a; }" & vbCrLf
-    gHtml = gHtml & "  ul { list-style: none; padding-left: 24px; }" & vbCrLf
+    gHtml = gHtml & "  ul { list-style: none; padding-left: 0; }" & vbCrLf
     gHtml = gHtml & "  ul.root { padding-left: 0; }" & vbCrLf
     gHtml = gHtml & "  li { margin: 4px 0; }" & vbCrLf
     gHtml = gHtml & "  li.assy { cursor: pointer; }" & vbCrLf
@@ -557,6 +630,7 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "  .part-name a { color: #0066cc; text-decoration: none; }" & vbCrLf
     gHtml = gHtml & "  .part-name a:hover { text-decoration: underline; }" & vbCrLf
     gHtml = gHtml & "  .children { margin-top: 4px; }" & vbCrLf
+    gHtml = gHtml & "  .assy-thumb { margin: 6px 0 0 24px; }" & vbCrLf
     gHtml = gHtml & "</style>" & vbCrLf
     gHtml = gHtml & "</head>" & vbCrLf
     gHtml = gHtml & "<body>" & vbCrLf
@@ -564,16 +638,21 @@ Private Sub InitHtml(ByVal assemblyName As String)
     gHtml = gHtml & "<ul class=""root"">" & vbCrLf
 End Sub
 
-Private Sub AppendAssemblyNode(ByVal Name As String, ByVal depth As Long)
-    gHtml = gHtml & "<li class=""assy collapsed"">" & vbCrLf
+Private Sub AppendAssemblyNode(ByVal Name As String, ByVal pngFile As String, ByVal depth As Long)
+    gHtml = gHtml & "<li class=""assy collapsed""" & BuildIndentStyle(depth) & ">" & vbCrLf
     gHtml = gHtml & "  <span class=""node-label"" onclick=""toggle(this.parentElement)"">" & vbCrLf
     gHtml = gHtml & "    <span class=""toggle-arrow"">&#9654;</span> &#128193; " & HtmlEncode(Name) & vbCrLf
     gHtml = gHtml & "  </span>" & vbCrLf
+    If Len(pngFile) > 0 Then
+        gHtml = gHtml & "  <div class=""assy-thumb"">" & vbCrLf
+        gHtml = gHtml & "    <img src=""" & HtmlEncode(pngFile) & """ class=""thumb"" alt=""" & HtmlEncode(Name) & """>" & vbCrLf
+        gHtml = gHtml & "  </div>" & vbCrLf
+    End If
     gHtml = gHtml & "  <ul class=""children"" style=""display:none"">" & vbCrLf
 End Sub
 
-Private Sub AppendPartNode(ByVal Name As String, ByVal pngFile As String, ByVal pdfFile As String)
-    gHtml = gHtml & "<li class=""part"">" & vbCrLf
+Private Sub AppendPartNode(ByVal Name As String, ByVal pngFile As String, ByVal pdfFile As String, ByVal depth As Long)
+    gHtml = gHtml & "<li class=""part""" & BuildIndentStyle(depth) & ">" & vbCrLf
 
     ' Thumbnail
     If Len(pngFile) > 0 Then
@@ -605,7 +684,7 @@ Private Function FinaliseHtml() As String
     html = html & "</ul>" & vbCrLf
     html = html & "<script>" & vbCrLf
     html = html & "function toggle(li) {" & vbCrLf
-    html = html & "  var ul = li.querySelector('.children');" & vbCrLf
+    html = html & "  var ul = li.querySelector('ul.children');" & vbCrLf
     html = html & "  if (!ul) return;" & vbCrLf
     html = html & "  if (ul.style.display === 'none') {" & vbCrLf
     html = html & "    ul.style.display = 'block';" & vbCrLf
@@ -656,6 +735,17 @@ Private Function HtmlEncode(ByVal s As String) As String
     HtmlEncode = t
 End Function
 
+Private Function BuildIndentStyle(ByVal depth As Long) As String
+    If depth <= 0 Then
+        BuildIndentStyle = ""
+        Exit Function
+    End If
+
+    Dim indentPx As Long
+    indentPx = depth * 24
+    BuildIndentStyle = " style=""margin-left:" & indentPx & "px; border-left:2px solid #ddd; padding-left:10px;"""
+End Function
+
 '===============================================================================
 ' UI / Utility
 '===============================================================================
@@ -677,6 +767,35 @@ Private Function BrowseForFolder() As String
 
 EH:
     BrowseForFolder = ""
+End Function
+
+Private Function GetRootComponentSafe(ByVal swAssy As SldWorks.AssemblyDoc) As SldWorks.Component2
+    On Error Resume Next
+
+    Dim rootComp As SldWorks.Component2
+    Set rootComp = swAssy.GetRootComponent3(True)
+    If rootComp Is Nothing Then
+        Set rootComp = swAssy.GetRootComponent3(False)
+    End If
+    If rootComp Is Nothing Then
+        Set rootComp = swAssy.GetRootComponent
+    End If
+    If rootComp Is Nothing Then
+        Dim swModel As SldWorks.ModelDoc2
+        Dim cfg As SldWorks.Configuration
+        Set swModel = swAssy
+        If Not swModel Is Nothing Then
+            Set cfg = swModel.ConfigurationManager.ActiveConfiguration
+            If Not cfg Is Nothing Then
+                Set rootComp = cfg.GetRootComponent3(True)
+                If rootComp Is Nothing Then
+                    Set rootComp = cfg.GetRootComponent3(False)
+                End If
+            End If
+        End If
+    End If
+
+    Set GetRootComponentSafe = rootComp
 End Function
 
 Private Sub LogMessage(ByVal msg As String)
